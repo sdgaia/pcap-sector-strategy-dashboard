@@ -8,298 +8,41 @@ const AIRTABLE_API_KEY = process.env.AIRTABLE || process.env.AIRTABLE_API_KEY ||
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "app1ulAFNbDuizG4n";
 const AIRTABLE_SECTOR_TABLE = process.env.AIRTABLE_SECTOR_TABLE || process.env.AIRTABLE_SECTOR_STRATEGIES_TABLE || "Sectoral Strategies";
 
-function esc(v) {
-  return String(v ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+function esc(v){return String(v??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/\"/g,"&quot;");}
+function rid(req){const q=req.query?.recordId;if(typeof q==="string"&&q.trim())return decodeURIComponent(q.trim());const m=(req.url||"").match(/[?&]recordId=([^&]+)/);return m?.[1]?decodeURIComponent(m[1].trim()):"";}
+function raw(f,n){const a=Array.isArray(n)?n:[n];for(const k of a){const v=f?.[k];if(v!==undefined&&v!==null&&v!=="")return v;}return null;}
+function display(v,fb="—"){if(Array.isArray(v))return v.map(x=>x?.name||x?.id||x).filter(Boolean).join(", ")||fb;if(v===undefined||v===null||v==="")return fb;if(typeof v==="object")return v.name||v.id||fb;return String(v);}
+function pick(f,n,fb="—"){return display(raw(f,n),fb);}
+function num(v){if(Array.isArray(v))return v.length?num(v[0]):null;if(v===undefined||v===null||v==="")return null;const n=Number(String(v).replace("%","").trim());if(Number.isNaN(n))return null;return n>1&&n<=100?n/100:n;}
+function pct(v){const n=num(v);return n===null?"—":`${Math.round(n*100)}%`;}
+function col(v){const n=num(v);if(n===null)return"#94a3b8";if(n>=.8)return"#16a34a";if(n>=.6)return"#2563eb";if(n>=.4)return"#f97316";return"#dc2626";}
+function cond(v){const n=num(v);if(n===null)return"Not assessed";if(n>=.8)return"Strong";if(n>=.6)return"Moderate";if(n>=.4)return"Fragile";return"Critical";}
+function emoji(v){const n=num(v);if(n===null)return"⚪";if(n>=.8)return"🟢";if(n>=.6)return"🔵";if(n>=.4)return"🟠";return"🔴";}
+function as01(n){return Math.max(0,Math.min(1,Number(n)||0));}
+function avg(vals){const xs=vals.map(num).filter(v=>v!==null);return xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:null;}
+
+async function afetch(url){if(!AIRTABLE_API_KEY)throw new Error("Missing AIRTABLE API key");const r=await fetch(url,{headers:{Authorization:`Bearer ${AIRTABLE_API_KEY}`,"Content-Type":"application/json"}});const t=await r.text();if(!r.ok)throw new Error(`Airtable ${r.status}: ${t}`);return JSON.parse(t);}
+async function fetchSector(id){const formula=`OR(RECORD_ID()="${id}",{Sector Strategy ID}="${id}",{Sectoral Strategy ID}="${id}")`;const p=new URLSearchParams({filterByFormula:formula,maxRecords:"1",cellFormat:"string",timeZone:"Europe/Paris",userLocale:"en-us"});const url=`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_SECTOR_TABLE)}?${p}`;const d=await afetch(url);if(!d.records?.length)throw new Error(`No Sectoral Strategy found for ${id}`);return d.records[0].fields||{};}
+
+function demo(){return {"Sector Strategy ID":"SS-1","Sectoral Strategy Name":"Sustainable Agriculture & Food Systems Strategy","Sector":"Agriculture / Food","Country":"Ghana","Lead Authorities":"MoFA","National Strategy":"NS-1","Sector Operational Governance Score":.81,"Governance Intelligence Score":.82,"Linked Policies Count":6,"Linked Programmes Count":4,"Linked Actions Count":15,"Critical Policies Count":1,"Critical Programmes Count":0,"Escalated Actions Count":1,"C1 Policy Governance":.9,"C2 Instrument Governance":.85,"C3 Resource Governance":.75,"C4 Monitoring Governance":.7,"C5 Escalation Governance":.68,"C6 Traceability Governance":.82,"Governance Drift":.18,"Monitoring Reliability":.70,"Escalation Readiness":.68,"Sector Governance Narrative":"The sector demonstrates strong policy alignment and institutional embedding, but monitoring continuity and trigger-response integration remain uneven across linked policy ecosystems.","Primary Weakness":"Trigger & Response (C5)","Primary Weakness Detail":"Response protocols need more consistent activation and documentation.","Top Strengths":"Strong alignment with national and regional priorities; comprehensive policy and programme coverage; robust auditability and documentation systems.","Key Gaps":"Monitoring system coverage for nutrition and youth outcomes; trigger and response mechanisms not fully operationalised; resource adequacy gaps for smallholder support.","Escalation Overview":"1 escalated action; 1 high-risk issue; 0 medium-risk issues."};}
+
+function assess(op,intel){const gap=Math.abs(Math.round(as01(op)*100)-Math.round(as01(intel)*100));const gapLabel=gap<=10?'🟢 Aligned':gap<=25?'🟡 Moderate Drift':gap<=40?'🟠 Structural Gap':'🔴 Critical Disconnect';if(op>=.6&&intel>=.6)return{pattern:'✅ Coherent Sectoral Governance System',risk:'🟢 Sector strategy and operational execution are mutually reinforcing.',priority:'📈 Maintain recursive monitoring and preserve evidence continuity.',gap,gapLabel};if(op>=.6&&intel<.6)return{pattern:'⚠️ Execution Without Strategic Depth',risk:'🟠 Sector delivery exists, but strategic coherence and referential alignment remain fragile.',priority:'🎯 Strengthen policy translation, sectoral alignment and documentary coherence.',gap,gapLabel};if(op<.6&&intel>=.6)return{pattern:'⚠️ Intelligent but Non-Operational',risk:'🟠 Sector architecture is visible, but monitoring, escalation and implementation systems remain unstable.',priority:'🎯 Strengthen C4 monitoring, C5 escalation and implementation closure before scaling.',gap,gapLabel};return{pattern:'🚨 Sectoral Governance Fragility',risk:'🔴 Strategic coherence and operational execution are both weak.',priority:'🎯 Rebuild minimum sector governance architecture before scaling implementation.',gap,gapLabel};}
+
+function build(f){
+ const c1=raw(f,["C1 Policy Governance","Sectoral Strategy C1 Coherence","C1 Score"]),c2=raw(f,["C2 Instrument Governance","Sectoral Strategy C2 Coherence","C2 Score"]),c3=raw(f,["C3 Resource Governance","Sectoral Strategy C3 Coherence","C3 Score"]),c4=raw(f,["C4 Monitoring Governance","Sectoral Strategy C4 Coherence","C4 Score"]),c5=raw(f,["C5 Escalation Governance","Sectoral Strategy C5 Coherence","C5 Score"]),c6=raw(f,["C6 Traceability Governance","Sectoral Strategy C6 Coherence","C6 Score"]);
+ const comp=[c1,c2,c3,c4,c5,c6];
+ const opRaw=raw(f,["Sector Operational Governance Score","Operational Governance Score","Overall Coherence Score"]);
+ const intelRaw=raw(f,["Governance Intelligence Score","Final Sectoral Strategy Coherence Score","Sectoral Strategy Aggregation Coherence Score"]);
+ const op= num(opRaw)??avg(comp)??.45;
+ const intel=num(intelRaw)??num(raw(f,["Final Sectoral Strategy Coherence Score"]))??op;
+ return {id:pick(f,["Sector Strategy ID","Sectoral Strategy ID"],"SS-1"),name:pick(f,["Sectoral Strategy Name","Sector Strategy Name","Strategy Name","Name"],"Sustainable Agriculture & Food Systems Strategy"),sector:pick(f,"Sector","Agriculture / Food"),country:pick(f,"Country","Ghana"),lead:pick(f,["Lead Authorities","Lead Authority","Lead Ministry"],"MoFA"),national:pick(f,["National Strategy","National Strategies"],"NS-1"),op,intel,drift:num(raw(f,["Governance Drift"]))??Math.max(0,intel-op),monitoring:num(raw(f,["Monitoring Reliability","C4 Monitoring Governance"]))??num(c4)??0,escalation:num(raw(f,["Escalation Readiness","C5 Escalation Governance"]))??num(c5)??0,linkedPolicies:pick(f,["Linked Policies Count","Linked Policies","Policies Count"],"6"),linkedPrograms:pick(f,["Linked Programmes Count","Linked Programs Count","Linked Programmes","Linked Programs"],"4"),linkedActions:pick(f,["Linked Actions Count","Linked Actions"],"15"),criticalPolicies:pick(f,["Critical Policies Count","Critical Policies"],"1"),criticalPrograms:pick(f,["Critical Programmes Count","Critical Programs Count"],"0"),escalatedActions:pick(f,["Escalated Actions Count","Escalation Count"],"1"),c1,c2,c3,c4,c5,c6,narrative:pick(f,["Sector Governance Narrative","Sectoral Strategy Narrative","Governance Narrative"],"No sector governance narrative available."),weakness:pick(f,["Primary Weakness","Weakest Component","Weakest Governance Layer"],"Trigger & Response (C5)"),weaknessDetail:pick(f,["Primary Weakness Detail","Weakness Detail"],"Response protocols need review."),strengths:pick(f,["Top Strengths","Strongest Governance Layers"],"No strengths identified yet."),gaps:pick(f,["Key Gaps","Critical Governance Failures"],"No gaps identified yet."),escalationOverview:pick(f,["Escalation Overview"],"No escalation overview available.")};
 }
-
-function getRecordId(req) {
-  const q = req.query?.recordId;
-  if (typeof q === "string" && q.trim()) return decodeURIComponent(q.trim());
-  const match = (req.url || "").match(/[?&]recordId=([^&]+)/);
-  return match?.[1] ? decodeURIComponent(match[1].trim()) : "";
-}
-
-function raw(fields, names) {
-  const arr = Array.isArray(names) ? names : [names];
-  for (const name of arr) {
-    const v = fields?.[name];
-    if (v !== undefined && v !== null && v !== "") return v;
-  }
-  return null;
-}
-
-function display(v, fallback = "—") {
-  if (Array.isArray(v)) return v.map((x) => x?.name || x).filter(Boolean).join(", ") || fallback;
-  if (v === undefined || v === null || v === "") return fallback;
-  if (typeof v === "object") return v.name || v.id || fallback;
-  return String(v);
-}
-
-function pick(fields, names, fallback = "—") {
-  return display(raw(fields, names), fallback);
-}
-
-function num(v) {
-  if (Array.isArray(v)) return v.length ? num(v[0]) : null;
-  if (v === undefined || v === null || v === "") return null;
-  const n = Number(String(v).replace("%", "").trim());
-  if (Number.isNaN(n)) return null;
-  return n > 1 && n <= 100 ? n / 100 : n;
-}
-
-function pct(v) {
-  const n = num(v);
-  return n === null ? "—" : `${Math.round(n * 100)}%`;
-}
-
-function color(v) {
-  const n = num(v);
-  if (n === null) return "#94a3b8";
-  if (n >= 0.8) return "#16a34a";
-  if (n >= 0.6) return "#2563eb";
-  if (n >= 0.4) return "#f97316";
-  return "#dc2626";
-}
-
-function condition(v) {
-  const n = num(v);
-  if (n === null) return "Not assessed";
-  if (n >= 0.8) return "Strong";
-  if (n >= 0.6) return "Moderate";
-  if (n >= 0.4) return "Fragile";
-  return "Critical";
-}
-
-function risk(v) {
-  const n = num(v);
-  if (n === null) return "Not assessed";
-  if (n >= 0.8) return "Low";
-  if (n >= 0.6) return "Moderate";
-  if (n >= 0.4) return "High";
-  return "Critical";
-}
-
-async function airtableFetch(url) {
-  if (!AIRTABLE_API_KEY) throw new Error("Missing AIRTABLE or AIRTABLE_API_KEY environment variable.");
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_API_KEY}`,
-      "Content-Type": "application/json"
-    }
-  });
-  const text = await response.text();
-  if (!response.ok) throw new Error(`Airtable ${response.status}: ${text}`);
-  return JSON.parse(text);
-}
-
-async function fetchSectorStrategy(recordId) {
-  const formula = `OR(RECORD_ID()="${recordId}",{Sector Strategy ID}="${recordId}",{Sectoral Strategy ID}="${recordId}")`;
-  const rawParams = new URLSearchParams({ filterByFormula: formula, maxRecords: "1" });
-  const strParams = new URLSearchParams({
-    filterByFormula: formula,
-    maxRecords: "1",
-    cellFormat: "string",
-    timeZone: "Europe/Paris",
-    userLocale: "en-us"
-  });
-  const base = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_SECTOR_TABLE)}`;
-  const [rawData, strData] = await Promise.all([
-    airtableFetch(`${base}?${rawParams}`),
-    airtableFetch(`${base}?${strParams}`)
-  ]);
-  if (!rawData.records?.length) throw new Error(`No Sectoral Strategy found for ${recordId}`);
-  return {
-    raw: rawData.records[0].fields || {},
-    str: strData.records?.[0]?.fields || rawData.records[0].fields || {}
-  };
-}
-
-function demoFields() {
-  return {
-    "Sector Strategy ID": "SS-1",
-    "Sectoral Strategy Name": "Sustainable Agriculture & Food Systems Strategy",
-    "Sector": "Agriculture / Food",
-    "Country": "Ghana",
-    "Lead Authorities": "MoFA",
-    "National Strategy": "NS-1",
-    "Final Sectoral Strategy Coherence Score": 0.81,
-    "Final Sectoral Strategy Coherence Status": "Strong Sectoral Coherence",
-    "Linked Policies Count": 6,
-    "Linked Programmes Count": 4,
-    "Linked Actions Count": 15,
-    "Critical Policies Count": 1,
-    "Critical Programmes Count": 0,
-    "Escalated Actions Count": 1,
-    "Policy Coherence Score": 0.82,
-    "Recursive Policy OCI-D": 0.84,
-    "Recursive Policy OCI-O": 0.68,
-    "Sectoral Strategy C1 Coherence": 0.9,
-    "Sectoral Strategy C2 Coherence": 0.85,
-    "Sectoral Strategy C3 Coherence": 0.75,
-    "Sectoral Strategy C4 Coherence": 0.7,
-    "Sectoral Strategy C5 Coherence": 0.68,
-    "Sectoral Strategy C6 Coherence": 0.82,
-    "C1 Score": 0.9,
-    "C2 Score": 0.85,
-    "C3 Score": 0.75,
-    "C4 Score": 0.7,
-    "C5 Score": 0.68,
-    "C6 Score": 0.82,
-    "Recursive Governance Exposure": 0.52,
-    "Cross-Policy Contradiction Pressure": 0.48,
-    "Vertical Coherence Score": 0.88,
-    "Horizontal Coherence Score": 0.73,
-    "Escalation Readiness Score": 0.61,
-    "Sector Governance Narrative": "The sector strategy demonstrates strong policy alignment and institutional embedding, but monitoring continuity and trigger-response integration remain uneven across linked policy ecosystems.",
-    "Primary Weakness": "Trigger & Response (C5)",
-    "Primary Weakness Detail": "Response protocols need more consistent activation and documentation.",
-    "Strategic Alignment Summary": "National strategy, regional frameworks and global frameworks are substantially aligned.",
-    "Top Strengths": "Strong alignment with national and regional priorities; comprehensive policy and programme coverage; robust auditability and documentation systems.",
-    "Key Gaps": "Monitoring system coverage for nutrition and youth outcomes; trigger and response mechanisms not fully operationalised; resource adequacy gaps for smallholder support.",
-    "Escalation Overview": "1 escalated action; 1 high-risk issue; 0 medium-risk issues."
-  };
-}
-
-function build(pair) {
-  const rawFields = pair?.raw || {};
-  const strFields = pair?.str || {};
-  const f = { ...rawFields, ...strFields };
-
-  const coherence = raw(rawFields, ["Final Sectoral Strategy Coherence Score", "Sector Coherence Score", "Overall Coherence Score"]);
-  const policyCoherence = raw(rawFields, ["Policy Coherence Score", "Recursive Policy Coherence", "Sectoral Strategy Aggregation Coherence Score"]);
-  const c1 = raw(rawFields, ["Sectoral Strategy C1 Coherence", "Sectoral Strategic C1 Coherence", "C1 Score"]);
-  const c2 = raw(rawFields, ["Sectoral Strategy C2 Coherence", "Sectoral Strategic C2 Coherence", "C2 Score"]);
-  const c3 = raw(rawFields, ["Sectoral Strategy C3 Coherence", "Sectoral Strategic C3 Coherence", "C3 Score"]);
-  const c4 = raw(rawFields, ["Sectoral Strategy C4 Coherence", "Sectoral Strategic C4 Coherence", "C4 Score"]);
-  const c5 = raw(rawFields, ["Sectoral Strategy C5 Coherence", "Sectoral Strategic C5 Coherence", "C5 Score"]);
-  const c6 = raw(rawFields, ["Sectoral Strategy C6 Coherence", "Sectoral Strategic C6 Coherence", "C6 Score"]);
-
-  return {
-    id: pick(f, ["Sector Strategy ID", "Sectoral Strategy ID"], "SS-1"),
-    name: pick(f, ["Sectoral Strategy Name", "Sector Strategy Name", "Strategy Name", "Name"], "Sustainable Agriculture & Food Systems Strategy"),
-    sector: pick(f, "Sector", "Agriculture / Food"),
-    country: pick(f, "Country", "Ghana"),
-    lead: pick(f, ["Lead Authorities", "Lead Authority", "Lead Ministry"], "MoFA"),
-    national: pick(f, ["National Strategy", "National Strategies"], "NS-1"),
-    coherence,
-    status: pick(f, ["Final Sectoral Strategy Coherence Status", "Sector Governance Condition"], condition(coherence)),
-    policyCoherence,
-    linkedPolicies: pick(f, ["Linked Policies Count", "Linked Policies", "Policies Count"], "6"),
-    linkedPrograms: pick(f, ["Linked Programmes Count", "Linked Programs Count", "Linked Programmes", "Linked Programs"], "4"),
-    linkedActions: pick(f, ["Linked Actions Count", "Linked Actions"], "15"),
-    criticalPolicies: pick(f, ["Critical Policies Count", "Critical Policies"], "1"),
-    criticalPrograms: pick(f, ["Critical Programmes Count", "Critical Programs Count"], "0"),
-    escalatedActions: pick(f, ["Escalated Actions Count", "Escalation Count"], "1"),
-    c1, c2, c3, c4, c5, c6,
-    recursiveD: raw(rawFields, ["Recursive Policy OCI-D", "OCI-D", "Final Sectoral Strategy OCI-D Score"]),
-    recursiveO: raw(rawFields, ["Recursive Policy OCI-O", "OCI-O", "Final Sectoral Strategy OCI-O Score"]),
-    recursiveExposure: raw(rawFields, ["Recursive Governance Exposure", "Policy Risk Exposure", "C4 Score"]),
-    contradiction: raw(rawFields, ["Cross-Policy Contradiction Pressure", "Policy Contradiction Pressure"]),
-    vertical: raw(rawFields, ["Vertical Coherence Score", "Strategic Alignment Score", "C1 Score"]),
-    horizontal: raw(rawFields, ["Horizontal Coherence Score", "C2 Score"]),
-    escalationReadiness: raw(rawFields, ["Escalation Readiness Score", "C5 Score"]),
-    narrative: pick(f, ["Sector Governance Narrative", "Sectoral Strategy Narrative", "Governance Narrative"], "No sector governance narrative available."),
-    weakness: pick(f, ["Primary Weakness", "Weakest Component", "Weakest Governance Layer"], "Trigger & Response (C5)"),
-    weaknessDetail: pick(f, ["Primary Weakness Detail", "Weakness Detail"], "Response protocols need more consistent activation and documentation."),
-    alignment: pick(f, ["Strategic Alignment Summary", "Alignment Summary"], "National, regional and global alignment should be reviewed."),
-    strengths: pick(f, ["Top Strengths", "Strongest Governance Layers"], "No strengths identified yet."),
-    gaps: pick(f, ["Key Gaps", "Critical Governance Failures"], "No gaps identified yet."),
-    escalation: pick(f, ["Escalation Overview"], "No escalation overview available.")
-  };
-}
-
-function gauge(title, value, sub) {
-  const n = num(value) ?? 0;
-  const deg = Math.round(n * 180);
-  return `<div class="card kpi-gauge"><div class="kpi-title">${esc(title)} <span class="info">i</span></div><div class="semi"><div class="arc" style="--deg:${deg}deg;--c:${color(value)}"></div><div class="semi-inner"><b style="color:${color(value)}">${pct(value)}</b><span>${esc(condition(value))}</span></div></div><div class="kpi-sub">${esc(sub)}</div></div>`;
-}
-
-function stat(title, value, sub) {
-  return `<div class="card stat"><div class="kpi-title">${esc(title)} <span class="info">i</span></div><div class="stat-number">${esc(display(value))}</div><div class="stat-sub">${esc(sub)}</div></div>`;
-}
-
-function bar(label, value, sub) {
-  const width = Math.round((num(value) ?? 0) * 100);
-  return `<div class="bar-row"><div class="bar-left"><span>${esc(label)}</span><small>${esc(sub)}</small></div><div class="bar-track"><i style="width:${width}%;background:${color(value)}"></i></div><b>${pct(value)}</b></div>`;
-}
-
-function radarPoint(i, total, value, cx, cy, r) {
-  const a = -Math.PI / 2 + (2 * Math.PI * i) / total;
-  return { x: cx + r * value * Math.cos(a), y: cy + r * value * Math.sin(a) };
-}
-
-function radar(scores) {
-  const cx = 190, cy = 175, r = 112, total = scores.length;
-  const vals = scores.map(s => num(s.value) ?? 0);
-  const avg = vals.reduce((a, b) => a + b, 0) / Math.max(1, vals.length);
-  const rings = [0.25, 0.5, 0.75, 1].map(level => {
-    const pts = scores.map((_, i) => radarPoint(i, total, level, cx, cy, r)).map(p => `${p.x},${p.y}`).join(" ");
-    return `<polygon points="${pts}" fill="none" stroke="#e5e7eb"/>`;
-  }).join("");
-  const axes = scores.map((_, i) => {
-    const p = radarPoint(i, total, 1, cx, cy, r);
-    return `<line x1="${cx}" y1="${cy}" x2="${p.x}" y2="${p.y}" stroke="#e5e7eb"/>`;
-  }).join("");
-  const shape = scores.map((s, i) => radarPoint(i, total, num(s.value) ?? 0, cx, cy, r)).map(p => `${p.x},${p.y}`).join(" ");
-  const labels = scores.map((s, i) => {
-    const p = radarPoint(i, total, 1.25, cx, cy, r);
-    return `<text x="${p.x}" y="${p.y}" text-anchor="middle" dominant-baseline="middle" font-size="12" font-weight="800" fill="#0f172a">${esc(s.key)}</text>`;
-  }).join("");
-  const dots = scores.map((s, i) => {
-    const p = radarPoint(i, total, num(s.value) ?? 0, cx, cy, r);
-    return `<circle cx="${p.x}" cy="${p.y}" r="7" fill="white" stroke="${color(s.value)}" stroke-width="4"/>`;
-  }).join("");
-  return `<div class="radar"><svg viewBox="0 0 380 360">${rings}${axes}<polygon points="${shape}" fill="rgba(37,99,235,.12)" stroke="#2563eb" stroke-width="3"/>${dots}${labels}<circle cx="${cx}" cy="${cy}" r="58" fill="#f8fafc"/><text x="${cx}" y="${cy - 10}" text-anchor="middle" font-size="13" font-weight="800" fill="#64748b">Average</text><text x="${cx}" y="${cy + 26}" text-anchor="middle" font-size="34" font-weight="900" fill="${color(avg)}">${pct(avg)}</text></svg><div class="legend"><span><i class="g"></i>Strong</span><span><i class="b"></i>Moderate</span><span><i class="o"></i>Weak</span><span><i class="r"></i>Critical</span></div></div>`;
-}
-
-function listBlock(text) {
-  return String(text || "").split(/;|\n/).map(x => x.trim()).filter(Boolean).map(x => `<p>✓ ${esc(x)}</p>`).join("") || "<p>—</p>";
-}
-
-function gapBlock(text) {
-  return String(text || "").split(/;|\n/).map(x => x.trim()).filter(Boolean).map(x => `<p>⚠ ${esc(x)}</p>`).join("") || "<p>—</p>";
-}
-
-function html(d) {
-  const radarScores = [
-    { key: "C1", value: d.c1 },
-    { key: "C2", value: d.c2 },
-    { key: "C3", value: d.c3 },
-    { key: "C4", value: d.c4 },
-    { key: "C5", value: d.c5 },
-    { key: "C6", value: d.c6 }
-  ];
-
-  return `<!doctype html><html><head><meta charset="utf-8"/><title>${esc(d.name)}</title><style>
-*{box-sizing:border-box}body{margin:0;background:#f5f7fb;color:#0f172a;font-family:Inter,Arial,sans-serif;padding:18px}.page{max-width:1660px;margin:0 auto}.head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}.kicker{font-size:14px;font-weight:900;color:#334155;margin-bottom:10px}.title{font-size:34px;font-weight:900;line-height:1.08}.meta{display:flex;gap:28px;flex-wrap:wrap;margin-top:14px;font-size:14px}.icon{font-size:28px;color:#16a34a}.right{font-size:13px;color:#64748b}.btn{background:white;border:1px solid #dbe3ef;color:#2563eb;border-radius:8px;padding:10px 16px;font-weight:900;margin-left:16px}.grid5{display:grid;grid-template-columns:1.15fr 1.1fr .95fr .95fr .95fr;gap:14px;margin-bottom:16px}.grid3{display:grid;grid-template-columns:1.08fr 1.08fr 1fr;gap:14px;margin-bottom:16px}.grid4{display:grid;grid-template-columns:1.05fr 1fr 1fr .85fr;gap:14px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:20px;box-shadow:0 1px 8px rgba(15,23,42,.04)}.kpi-title{font-size:15px;font-weight:900;margin-bottom:12px}.info{font-size:11px;border:1px solid #94a3b8;border-radius:50%;padding:0 4px;color:#94a3b8}.semi{height:150px;position:relative;display:flex;justify-content:center;align-items:flex-end;overflow:hidden}.arc{--deg:120deg;--c:#16a34a;width:200px;height:200px;border-radius:50%;background:conic-gradient(from 270deg,var(--c) var(--deg),#e5e7eb 0 180deg,transparent 0);position:absolute;bottom:-100px}.semi-inner{width:132px;height:132px;border-radius:50%;background:white;z-index:2;display:flex;flex-direction:column;justify-content:center;align-items:center;margin-bottom:-58px}.semi-inner b{font-size:38px}.semi-inner span{font-weight:900;font-size:15px}.kpi-sub{text-align:center;color:#64748b;font-weight:800;font-size:12px;margin-top:10px}.stat-number{font-size:44px;color:#2563eb;font-weight:900;margin:18px 0 10px}.stat-sub{color:#16a34a;font-weight:900}.section-title{font-size:19px;font-weight:900;margin-bottom:16px}.bar-row{display:grid;grid-template-columns:200px 1fr 50px;gap:14px;align-items:center;margin:14px 0}.bar-left span{font-weight:900;font-size:13px}.bar-left small{display:block;color:#64748b;font-size:11px;margin-top:4px}.bar-track{height:10px;border-radius:99px;background:#e5e7eb;overflow:hidden}.bar-track i{display:block;height:10px;border-radius:99px}.bar-row b{text-align:right}.riskbox{background:#f0fdf4;border-radius:14px;padding:18px;margin-top:18px}.riskbox strong{display:block;font-size:17px;margin-bottom:8px}.riskbox p{font-size:13px;line-height:1.55;margin:0}.radar svg{width:100%;height:360px}.legend{display:flex;gap:22px;justify-content:center;font-size:12px;color:#64748b;font-weight:800}.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}.g{background:#16a34a}.b{background:#2563eb}.o{background:#f97316}.r{background:#dc2626}.small{font-size:13px;line-height:1.55}.small p{margin:0 0 10px}.gap p{color:#334155}.escalation{font-size:34px;color:#dc2626;font-weight:900}@media(max-width:1200px){.grid5,.grid3,.grid4{grid-template-columns:1fr}.head{display:block}.right{margin-top:12px}}
-</style></head><body><div class="page"><div class="head"><div><div class="kicker">Sector Coherence Dashboard</div><div class="title"><span class="icon">♧</span> ${esc(d.name)}</div><div class="meta"><div>🏷️ <b>Sector:</b> ${esc(d.sector)}</div><div>🇬🇭 <b>Country:</b> ${esc(d.country)}</div><div>🏛️ <b>Lead Authorities:</b> ${esc(d.lead)}</div><div>📄 <b>National Strategy:</b> ${esc(d.national)}</div></div></div><div class="right">📅 Last updated: 23 May 2025 <button class="btn">⬇ Export</button></div></div><div class="grid5">${gauge("Sector Coherence Score", d.coherence, "Target: ≥ 80%")}<div class="card"><div class="kpi-title">Overall Governance Condition <span class="info">i</span></div><div style="font-size:28px;color:${color(d.coherence)};font-weight:900;margin:22px 0">● ${esc(condition(d.coherence))}</div><div class="small">${esc(d.status)}. Well aligned with recursive policy foundations and sectoral governance architecture.</div><div style="margin-top:18px;color:#2563eb;font-weight:900">View details →</div></div>${stat("Linked Policies", d.linkedPolicies, `${esc(d.criticalPolicies)} critical · active`)}${stat("Linked Programs", d.linkedPrograms, `${esc(d.criticalPrograms)} critical · stable`)}${stat("Linked Actions", d.linkedActions, `${esc(d.escalatedActions)} escalated · active`)}</div><div class="grid3"><div class="card"><div class="section-title">Policy Coherence (C1–C6) <span class="info">i</span></div>${radar(radarScores)}</div><div class="card"><div class="section-title">Sectoral Strategy Coherence <span class="info">i</span></div>${bar("C1 Target Alignment", d.c1, "Strategic target alignment")}${bar("C2 Instrument Embedding", d.c2, "Policy instrument embedding")}${bar("C3 Resource Alignment", d.c3, "Sector resource logic")}${bar("C4 Monitoring System", d.c4, "Sector monitoring architecture")}${bar("C5 Trigger & Response", d.c5, "Review and escalation design")}${bar("C6 Auditability & Traceability", d.c6, "Documentation and traceability")}</div><div class="card"><div class="section-title">Recursive Policy Governance Exposure <span class="info">i</span></div><div style="text-align:center;margin-top:30px"><div style="font-size:52px;font-weight:900;color:${color(d.policyCoherence)}">${pct(d.policyCoherence)}</div><div style="font-size:18px;font-weight:900;color:${color(d.policyCoherence)}">${esc(condition(d.policyCoherence))}</div></div><div class="riskbox"><strong>Primary Weakness</strong><b>${esc(d.weakness)}</b><p>${esc(d.weaknessDetail)}</p></div></div></div><div class="grid4"><div class="card"><div class="section-title">Strategic Alignment <span class="info">i</span></div><div class="small">${esc(d.alignment)}</div><br/><b>National Strategy</b><p>${esc(d.national)}</p><b>Regional Frameworks</b><p>CAADP / ECOWAS policy architecture</p><b>Global Frameworks</b><p>UN SDGs, Paris Agreement, FAO Strategic Framework</p></div><div class="card"><div class="section-title">Top Strengths <span class="info">i</span></div><div class="small">${listBlock(d.strengths)}</div></div><div class="card"><div class="section-title">Key Gaps <span class="info">i</span></div><div class="small gap">${gapBlock(d.gaps)}</div></div><div class="card"><div class="section-title">Escalation Overview <span class="info">i</span></div><div class="escalation">${esc(d.escalatedActions)}</div><b>Escalated Action</b><br/><br/><div class="small">${esc(d.escalation)}</div></div></div></div></body></html>`;
-}
-
-app.get("/", async (req, res) => {
-  try {
-    const id = getRecordId(req);
-    const pair = id ? await fetchSectorStrategy(id) : { raw: demoFields(), str: demoFields() };
-    res.type("html").send(html(build(pair)));
-  } catch (e) {
-    const demo = demoFields();
-    demo["Sector Governance Narrative"] = `Runtime fallback: ${e.message || String(e)}`;
-    res.type("html").send(html(build({ raw: demo, str: demo })));
-  }
-});
-
-app.get("/api", async (req, res) => {
-  try {
-    const id = getRecordId(req);
-    const pair = id ? await fetchSectorStrategy(id) : { raw: demoFields(), str: demoFields() };
-    res.type("html").send(html(build(pair)));
-  } catch (e) {
-    const demo = demoFields();
-    demo["Sector Governance Narrative"] = `Runtime fallback: ${e.message || String(e)}`;
-    res.type("html").send(html(build({ raw: demo, str: demo })));
-  }
-});
-
-app.listen(PORT, () => console.log(`Sector strategy dashboard active on port ${PORT}`));
+function gauge(title,v,sub){const n=num(v)??0;return `<div class="card kpi"><div class="kt">${esc(title)} <span>i</span></div><div class="semi" style="--p:${Math.round(n*180)}deg;--c:${col(v)}"><b style="color:${col(v)}">${pct(v)}</b><em>${esc(sub||cond(v))}</em></div><div class="ks">0% <span>100%</span></div></div>`;}
+function stat(t,v,s){return `<div class="card"><div class="kt">${esc(t)} <span>i</span></div><div class="big">${esc(display(v))}</div><div class="green">${esc(s)}</div></div>`;}
+function bar(t,v,s){const w=Math.round((num(v)??0)*100);return `<div class="bar"><div><b>${esc(t)}</b><small>${esc(s)}</small></div><i><u style="width:${w}%;background:${col(v)}"></u></i><strong>${pct(v)}</strong></div>`;}
+function list(txt,icon){return String(txt||"").split(/;|\n/).map(x=>x.trim()).filter(Boolean).map(x=>`<p>${icon} ${esc(x)}</p>`).join("")||"<p>—</p>";}
+function assessCard(d){const a=assess(d.op,d.intel);return `<div class="card assessment"><h2>🧠 Overall Sector-Level Governance Assessment</h2><div class="assessGrid"><div class="assessMetric"><span>⚙️ Sectoral Operational Governance</span><b style="color:${col(d.op)}">${emoji(d.op)} ${pct(d.op)}</b><small>${cond(d.op)}</small></div><div class="assessMetric"><span>🧠 Sectoral Governance Intelligence</span><b style="color:${col(d.intel)}">${emoji(d.intel)} ${pct(d.intel)}</b><small>${cond(d.intel)}</small></div><div class="assessMetric"><span>⚖️ Strategic–Operational Gap</span><b>${a.gap}%</b><small>${a.gapLabel}</small></div></div><div class="interpret"><p><b>${a.pattern}</b></p><p>${a.risk}</p><p><b>${a.priority}</b></p></div></div>`;}
+function html(d){return `<!doctype html><html><head><meta charset="utf-8"><title>${esc(d.name)}</title><style>*{box-sizing:border-box}body{margin:0;background:#f5f7fb;color:#0f172a;font-family:Arial,sans-serif;padding:18px}.page{max-width:1660px;margin:0 auto}.head{display:flex;justify-content:space-between;margin-bottom:16px}.kicker{font-size:14px;font-weight:900;color:#334155;margin-bottom:10px}.title{font-size:34px;font-weight:900}.meta{display:flex;gap:28px;flex-wrap:wrap;margin-top:14px;font-size:14px}.right{font-size:13px;color:#64748b}.btn{background:#fff;border:1px solid #dbe3ef;color:#2563eb;border-radius:8px;padding:10px 16px;font-weight:900;margin-left:16px}.grid5{display:grid;grid-template-columns:1.15fr 1.1fr .95fr .95fr .95fr;gap:14px;margin-bottom:16px}.grid3{display:grid;grid-template-columns:1.08fr 1.08fr 1fr;gap:14px;margin-bottom:16px}.grid4{display:grid;grid-template-columns:1fr 1fr 1fr .85fr;gap:14px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:20px;box-shadow:0 1px 8px rgba(15,23,42,.04)}.kt{font-size:15px;font-weight:900;margin-bottom:12px}.kt span{font-size:11px;border:1px solid #94a3b8;border-radius:50%;padding:0 4px;color:#94a3b8}.semi{height:150px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:conic-gradient(from 270deg,var(--c) var(--p),#e5e7eb 0 180deg,transparent 0);border-radius:999px;width:210px;margin:auto}.semi b{font-size:38px}.semi em{font-style:normal;font-weight:900}.ks{display:flex;justify-content:space-between;color:#64748b;font-weight:800;font-size:12px}.big{font-size:44px;color:#2563eb;font-weight:900;margin:18px 0 10px}.green{color:#16a34a;font-weight:900}.section{font-size:19px;font-weight:900;margin-bottom:16px}.bar{display:grid;grid-template-columns:210px 1fr 50px;gap:14px;align-items:center;margin:14px 0}.bar small{display:block;color:#64748b;font-size:11px;margin-top:4px}.bar i{height:10px;border-radius:99px;background:#e5e7eb;overflow:hidden}.bar u{display:block;height:10px;border-radius:99px}.assessment{margin-bottom:16px;background:linear-gradient(135deg,#f8fafc,#eff6ff)}.assessment h2{font-size:22px;margin:0 0 12px}.assessGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.assessMetric{background:white;border:1px solid #dbeafe;border-radius:10px;padding:14px}.assessMetric span,.assessMetric small{display:block;color:#64748b}.assessMetric b{display:block;font-size:28px;margin:8px 0}.interpret{margin-top:12px;border-left:5px solid #2563eb;background:white;border-radius:10px;padding:12px}.interpret p{margin:6px 0}.riskbox{background:#f0fdf4;border-radius:14px;padding:18px;margin-top:18px}.small{font-size:13px;line-height:1.55}.small p{margin:0 0 10px}@media(max-width:1200px){.grid5,.grid3,.grid4,.assessGrid{grid-template-columns:1fr}.head{display:block}}</style></head><body><div class="page"><div class="head"><div><div class="kicker">Sectoral Operational Governance Dashboard</div><div class="title">⚙️ ${esc(d.name)}</div><div class="meta"><div>🏷️ <b>Sector:</b> ${esc(d.sector)}</div><div>🇬🇭 <b>Country:</b> ${esc(d.country)}</div><div>🏛️ <b>Lead Authorities:</b> ${esc(d.lead)}</div><div>📄 <b>National Strategy:</b> ${esc(d.national)}</div></div></div><div class="right">📅 Last updated: ${new Date().toLocaleDateString()} <button class="btn">⬇ Export</button></div></div><div class="grid5">${gauge("Sectoral Operational Governance Score",d.op,cond(d.op))}${gauge("Governance Drift",d.drift,(num(d.drift)??0)<=.1?"Low":(num(d.drift)??0)<=.25?"Moderate":"High")}${gauge("Monitoring Reliability",d.monitoring,cond(d.monitoring))}${gauge("Escalation Readiness",d.escalation,cond(d.escalation))}${stat("Linked Actions",d.linkedActions,`${esc(d.escalatedActions)} escalated · active`)}</div>${assessCard(d)}<div class="grid3"><div class="card"><div class="section">Operational Governance Components (C1–C6)</div>${bar("C1 Policy Governance",d.c1,"Policy alignment")}${bar("C2 Instrument Governance",d.c2,"Instrument embedding")}${bar("C3 Resource Governance",d.c3,"Resource alignment")}${bar("C4 Monitoring Governance",d.c4,"Monitoring architecture")}${bar("C5 Escalation Governance",d.c5,"Trigger and response")}${bar("C6 Traceability Governance",d.c6,"Evidence and audit trail")}</div><div class="card"><div class="section">Operational Governance Intelligence</div>${bar("Policy Linkage Coverage",d.op,"Recursive policy execution")}${bar("Monitoring Reliability",d.monitoring,"Signal continuity")}${bar("Escalation Readiness",d.escalation,"Response closure")}${bar("Traceability",d.c6,"Documentation discipline")}</div><div class="card"><div class="section">Recursive Operational Governance Exposure</div><div style="text-align:center;margin-top:30px"><div style="font-size:52px;font-weight:900;color:${col(d.op)}">${pct(d.op)}</div><div style="font-size:18px;font-weight:900;color:${col(d.op)}">${esc(cond(d.op))}</div></div><div class="riskbox"><b>Primary Weakness</b><br><b>${esc(d.weakness)}</b><p>${esc(d.weaknessDetail)}</p></div></div></div><div class="grid4"><div class="card"><div class="section">Operational Context</div><div class="small">${esc(d.narrative)}</div><br><b>National Strategy</b><p>${esc(d.national)}</p><b>Linked Policies</b><p>${esc(d.linkedPolicies)}</p><b>Linked Programs</b><p>${esc(d.linkedPrograms)}</p></div><div class="card"><div class="section">Top Operational Strengths</div><div class="small">${list(d.strengths,"✅")}</div></div><div class="card"><div class="section">Operational Gaps</div><div class="small">${list(d.gaps,"⚠️")}</div></div><div class="card"><div class="section">Escalation Overview</div><div style="font-size:34px;color:#dc2626;font-weight:900">${esc(d.escalatedActions)}</div><b>Escalated Action</b><br><br><div class="small">${esc(d.escalationOverview)}</div></div></div><div class="small" style="margin-top:12px;color:#64748b">Sectoral Operational Governance only. Sectoral Governance Intelligence is handled in the separate SIG dashboard.</div></div></body></html>`;}
+async function serve(req,res){try{const id=rid(req);const f=id?await fetchSector(id):demo();res.type("html").send(html(build(f)));}catch(e){const f=demo();f["Sector Governance Narrative"]=`Runtime fallback: ${e.message||String(e)}`;res.type("html").send(html(build(f)));}}
+app.get("/",serve);app.get("/api",serve);
+app.listen(PORT,()=>console.log(`SOG dashboard active on port ${PORT}`));
